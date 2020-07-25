@@ -22,18 +22,18 @@ class WLightBoxSwitch {
         this.log = log;
         this.name = config.name;
         this.channels = config.channels || 4;
-        this.names = config.names || ['Switch 0', 'Switch 1', 'Switch 2', 'Switch 3'];
+        this.names = config.names || ['Channel 0', 'Channel 1', 'Channel 2', 'Channel 3'];
         this.ip = config.ip;
-        this.updateInterval = config.updateInterval || 60000;
-        this.current_status = [0,0,0,0];
-        this.status_callbacks = new Array();
-        this.current_status_time = null;
+        this.updateInterval = config.updateInterval || 3000;
+        this.statusTimer = null;
+        this.currentValue = [0,0,0,0];
+        this.currentValueTime = null;
 
         this.log.debug(`Names: ${this.names[0]}, ${this.names[1]}, ${this.names[2]}, ${this.names[3]}`);
 
         for (let i = 0; i < this.channels; i++) {
             const switchName = (this.name).concat(' ', (this.names[i]));
-            const subtype = "switch" + i;
+            const subtype = "channel" + i;
             
             this.services[i] = new Service.Lightbulb(switchName, subtype);
 
@@ -47,14 +47,14 @@ class WLightBoxSwitch {
 
         this.updateStatus(true);
     }
-
+ 
     getServices() {
         return this.services;
     }
 
     statusLampGet(number, callback) {
 
-        this.log.debug(`Number GET : ${number}`);
+        this.log.debug(`GET - channel number : ${number}`);
 
         this.statusGet(false, (error) => {
             if (error) {
@@ -63,39 +63,85 @@ class WLightBoxSwitch {
             }
 
         });
-        callback(null, this.current_status[number] > 0);
-        this.log.debug(`Triggered GET : ${this.current_status[number]}`);
+        callback(null, this.currentValue[number] > 0);
+        this.log.debug(`GET - channel[${number}] value: ${this.currentValue[number]}`);
     }
 
     statusLampSet(number, value, callback) {
 
-        this.log.debug(`Triggered SET On: ${value} for ${number}`);
+        var hex = '';
+        this.log.debug(`SET - channel[${number}] value: ${value}`);
 
-        if (value)
-            this.current_status[number] = 255;
-        else
-            this.current_status[number] = 0;
+        if (value) {
+            this.currentValue[number] = 255;
+            hex = 'ff';
+        } else {
+            this.currentValue[number] = 0;
+            hex = '00';
+        }
 
-        callback(null);
+        var colorSet = '--------';
+
+        colorSet = colorSet.substr(0, number * 2) + hex + colorSet.substr(number * 2 + 2);
+        
+        this.sendJSONRequest('http://' + this.ip + `/s/${colorSet}`, 'GET')
+        .then((response) => {
+            if (response) {
+                const desiredColor = response.rgbw.desiredColor;
+                for (let index = 0; index < 8; index++) {
+                    var str = desiredColor.substr(index, 2);
+                    //this.log.debug(`${Math.floor(index/2)} - substr [${index}]: ${str} -> ${desiredColor}`);
+                    this.currentValue[Math.floor(index/2)] = parseInt(str, 16);
+                    index++;
+                }
+                this.currentValueTime = Date.now();
+            }
+            this.updateStatus(false);
+            callback();
+        })
+        .catch((e) => {
+            this.log.error(`Failed to switch: ${e}`);
+            setTimeout(() => { callback(e); this.updateStatus(true); }, 3000);
+        });
     }
 
     statusGet(forced, callback) {
 
-        if (forced) {
-            const dummy = "ff00ff00";
+        const now = Date.now();
 
-            for (let index = 0; index < 8; index++) {
-                var str = dummy.substr(index, 2);
-                this.log.debug(`${Math.floor(index/2)} - substr [${index}]: ${str} -> ${dummy}`);
-                this.current_status[Math.floor(index/2)] = parseInt("0x" + str);
-                index++;
-
-            }
+        if (!forced && (now - this.currentValueTime < this.updateInterval) ) {
+            this.log.debug('Status from variable');
+            callback(null);
+            return;
         }
 
+        this.clearUpdateTimer();
+
+
+        this.sendJSONRequest('http://' + this.ip + '/api/rgbw/state')
+            .then((response) => {
+                this.log.debug('Update done');
+                this.currentValueTime = Date.now();
+
+
+                //this.log.debug(`Desired Color: ${response.rgbw.desiredColor}`);
+                const desiredColor = response.rgbw.desiredColor;
+                for (let index = 0; index < 8; index++) {
+                    var str = desiredColor.substr(index, 2);
+                    this.log.debug(`${Math.floor(index/2)} - substr [${index}]: ${str} -> ${desiredColor}`);
+                    this.currentValue[Math.floor(index/2)] = parseInt(str, 16);
+                    index++;
+                }
+
+                this.setUpdateTimer();
+            })
+            .catch((e) => {
+                this.log.error(`Error parsing: ${e}`);
+                this.setUpdateTimer();
+            })
     }
 
-    updateStatus(forced = flase) {
+    updateStatus(forced = false) {
         this.log.debug('Updating switch status');
         this.statusGet(forced, (err) => {
             if (err) {
@@ -107,51 +153,61 @@ class WLightBoxSwitch {
         this.log.debug('Updating characteristics');
 
         for (let index = 0; index < this.channels; index++) {
-            this.services[index].updateCharacteristic(Characteristic.On,  this.current_status[index] > 0);
+            this.services[index].getCharacteristic(Characteristic.On).updateValue(this.currentValue[index] > 0);
         };
        
     }
 
+    setUpdateTimer() {
+        this.log.debug('Update Timer : SET');
+        this.statusTimer = setTimeout(() => { this.updateStatus(true); }, this.updateInterval);
+    }
 
+    clearUpdateTimer() {
+        this.log.debug('Update Timer : CLEAR');
+        clearTimeout(this.statusTimer);
+    }
+
+    sendJSONRequest (url, method = 'GET', payload = null) {
+        return new Promise((resolve, reject) => {
+            const components = new urllib.URL(url);
+            const options = {
+                method: method,
+                host: components.hostname,
+                port: components.port,
+                path: components.pathname,
+                protocol: components.protocol,
+                headers: {'Content-Type': 'application/json'}
+            };
+            const req = http.request(options, (res) => {
+                res.setEncoding('utf8');
+                let chunks = '';
+                res.on('data', (chunk) => { chunks += chunk; });
+                res.on('end', () => {
+                    try {
+                        this.log.debug(`Raw response: ${chunks}`);
+                        const parsed = JSON.parse(chunks);
+                        resolve(parsed);
+                    } catch (e) {
+                        reject(e);
+                    }
+                });
+            });
+            req.on('error', (err) => {
+                reject(err);
+            });
+            if (payload) {
+                const stringified = JSON.stringify(payload);
+                this.log(`sending payload: ${stringified}`);
+                req.write(stringified);
+            }
+            req.end();
+        });
+    }
 
 }
 
 
 
-    // sendJSONRequest (url, method = 'GET', payload = null) {
-    //     return new Promise((resolve, reject) => {
-
-    //         const components = new urllib.URL(url);
-
-    //         const options = {
-    //             method: method,
-    //             host: components.hostname,
-    //             port: components.port,
-    //             path: components.pathname,
-    //             protocol: components.protocol,
-    //             headers: {'Content-Type': 'application/json'}
-    //         };
-    
-    //         const req = http.request(options, (res) => {
-    //             res.setEncoding('utf8');
-
-    //             let chunks = '';
-    //             res.on('data', (chunk) => { chunks += chunk; });
-    //             res.on('end', () => {
-    //                 try {
-    //                     this.log.debug(`Raw response: ${chunks}`);
-    //                     const parsed = JSON.parse(chunks);
-    //                     resolve(parsed);
-    //                 } catch(e) {
-    //                     reject(e);
-    //                 }
-    //             });
-    //         });
-    //         req.on('error', (err) => {
-    //             reject(err);
-    //         });
-    //         req.end();
-    //     });
-    // }
 
 
