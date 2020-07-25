@@ -128,7 +128,7 @@ class WLightBoxSwitch {
                 const desiredColor = response.rgbw.desiredColor;
                 for (let index = 0; index < 8; index++) {
                     var str = desiredColor.substr(index, 2);
-                    this.log.debug(`${Math.floor(index/2)} - substr [${index}]: ${str} -> ${desiredColor}`);
+                    //this.log.debug(`${Math.floor(index/2)} - substr [${index}]: ${str} -> ${desiredColor}`);
                     this.currentValue[Math.floor(index/2)] = parseInt(str, 16);
                     index++;
                 }
