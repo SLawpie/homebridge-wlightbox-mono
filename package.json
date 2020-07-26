@@ -1,6 +1,6 @@
 {
     "name": "homebridge-wlightbox-mono",
-    "version": "0.3.73",
+    "version": "0.4.25",
     "description": "BleBox wLightBox v.2 switches for Homebridge: https://github.com/SLawpie/homebridge-wlightbox-mono",
     "license": "ISC",
     "keywords": [

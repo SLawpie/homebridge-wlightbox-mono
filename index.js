@@ -38,6 +38,8 @@ class WLightBoxSwitch {
             this.services[i] = new Service.Lightbulb(switchName, subtype);
 
             this.services[i].getCharacteristic(Characteristic.On)
+                 .on('set', this.statusLampSet.bind(this, i));
+            this.services[i].getCharacteristic(Characteristic.Brightness)
                  .on('get', this.statusLampGet.bind(this, i))
                  .on('set', this.statusLampSet.bind(this, i));
             this.services.push(this.switch1Service);
@@ -63,7 +65,7 @@ class WLightBoxSwitch {
             }
 
         });
-        callback(null, this.currentValue[number] > 0);
+        callback(null, this.currentValue[number]);
         this.log.debug(`GET - channel[${number}] value: ${this.currentValue[number]}`);
     }
 
@@ -72,26 +74,35 @@ class WLightBoxSwitch {
         var hex = '';
         this.log.debug(`SET - channel[${number}] value: ${value}`);
 
-        if (value) {
-            this.currentValue[number] = 255;
-            hex = 'ff';
+        if (!value) {
+           hex ="00";
+           this.currentValue[number] = 0;
+        } else if (value == true) {
+            if ( this.currentValue[number] > 0) {
+                hex = Math.round(this.currentValue[number] * 2.55).toString(16);
+            } else {
+                hex ="ff";
+                this.currentValue[number] = 100;
+            }
         } else {
-            this.currentValue[number] = 0;
-            hex = '00';
+            this.currentValue[number] = value;
+            hex = Math.round(value * 2.55).toString(16);
+            hex = "00".substr(0, 2 - hex.length) + hex;
+            
         }
+        
 
         var colorSet = '--------';
-
+ 
         colorSet = colorSet.substr(0, number * 2) + hex + colorSet.substr(number * 2 + 2);
-        
+ 
         this.sendJSONRequest('http://' + this.ip + `/s/${colorSet}`, 'GET')
         .then((response) => {
             if (response) {
                 const desiredColor = response.rgbw.desiredColor;
                 for (let index = 0; index < 8; index++) {
                     var str = desiredColor.substr(index, 2);
-                    //this.log.debug(`${Math.floor(index/2)} - substr [${index}]: ${str} -> ${desiredColor}`);
-                    this.currentValue[Math.floor(index/2)] = parseInt(str, 16);
+                    this.currentValue[Math.floor(index/2)] = this.colorToBrightness(str);
                     index++;
                 }
                 this.currentValueTime = Date.now();
@@ -101,7 +112,7 @@ class WLightBoxSwitch {
         })
         .catch((e) => {
             this.log.error(`Failed to switch: ${e}`);
-            setTimeout(() => { callback(e); this.updateStatus(true); }, 3000);
+            setTimeout(() => { callback(e); this.updateStatus(true); }, 2000);
         });
     }
 
@@ -123,13 +134,10 @@ class WLightBoxSwitch {
                 this.log.debug('Update done');
                 this.currentValueTime = Date.now();
 
-
-                //this.log.debug(`Desired Color: ${response.rgbw.desiredColor}`);
                 const desiredColor = response.rgbw.desiredColor;
                 for (let index = 0; index < 8; index++) {
                     var str = desiredColor.substr(index, 2);
-                    //this.log.debug(`${Math.floor(index/2)} - substr [${index}]: ${str} -> ${desiredColor}`);
-                    this.currentValue[Math.floor(index/2)] = parseInt(str, 16);
+                    this.currentValue[Math.floor(index/2)] = this.colorToBrightness(str);
                     index++;
                 }
 
@@ -154,6 +162,7 @@ class WLightBoxSwitch {
 
         for (let index = 0; index < this.channels; index++) {
             this.services[index].getCharacteristic(Characteristic.On).updateValue(this.currentValue[index] > 0);
+            this.services[index].getCharacteristic(Characteristic.Brightness).updateValue(this.currentValue[index]);
         };
        
     }
@@ -205,6 +214,9 @@ class WLightBoxSwitch {
         });
     }
 
+    colorToBrightness (str) {
+        return Math.round(parseInt(str, 16) / 2.55);
+    }
 }
 
 
